@@ -1,0 +1,6 @@
+module Pods_OpenDMobile {
+  umbrella header "Pods-OpenDMobile-umbrella.h"
+
+  export *
+  module * { export * }
+}

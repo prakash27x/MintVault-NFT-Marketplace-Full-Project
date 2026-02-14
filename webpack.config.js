@@ -1,0 +1,149 @@
+const path = require("path");
+const webpack = require("webpack");
+const HtmlWebpackPlugin = require("html-webpack-plugin");
+const TerserPlugin = require("terser-webpack-plugin");
+const CopyPlugin = require("copy-webpack-plugin");
+
+function initCanisterEnv() {
+  let localCanisters, prodCanisters;
+  try {
+    localCanisters = require(path.resolve(
+      ".dfx",
+      "local",
+      "canister_ids.json"
+    ));
+  } catch (error) {
+    console.log("No local canister_ids.json found. Continuing production");
+  }
+  try {
+    prodCanisters = require(path.resolve("canister_ids.json"));
+  } catch (error) {
+    console.log("No production canister_ids.json found. Continuing with local");
+  }
+
+  const network =
+    process.env.DFX_NETWORK ||
+    (process.env.NODE_ENV === "production" ? "ic" : "local");
+
+  const canisterConfig = network === "local" ? localCanisters : prodCanisters;
+
+  return Object.entries(canisterConfig).reduce((prev, current) => {
+    const [canisterName, canisterDetails] = current;
+    // Set both naming conventions for compatibility
+    const upperName = canisterName.toUpperCase();
+    prev[upperName + "_CANISTER_ID"] = canisterDetails[network];
+    prev["CANISTER_ID_" + upperName] = canisterDetails[network];
+    return prev;
+  }, {});
+}
+const canisterEnvVariables = initCanisterEnv();
+
+const isDevelopment = process.env.NODE_ENV !== "production";
+
+const frontendDirectory = "opend_assets";
+
+const asset_entry = path.join("src", frontendDirectory, "src", "index.html");
+
+module.exports = {
+  target: "web",
+  mode: isDevelopment ? "development" : "production",
+  entry: {
+    index: path.join(__dirname, asset_entry).replace(/\.html$/, ".jsx"),
+    "ii-auth": path.join(__dirname, "src", frontendDirectory, "src", "ii-auth.js"),
+  },
+  devtool: isDevelopment ? "source-map" : false,
+  optimization: {
+    minimize: !isDevelopment,
+    minimizer: [new TerserPlugin()],
+  },
+  resolve: {
+    extensions: [".js", ".ts", ".jsx", ".tsx"],
+    fallback: {
+      assert: require.resolve("assert/"),
+      buffer: require.resolve("buffer/"),
+      events: require.resolve("events/"),
+      stream: require.resolve("stream-browserify/"),
+      util: require.resolve("util/"),
+    },
+  },
+  output: {
+    filename: "[name].js",
+    path: path.join(__dirname, "dist", frontendDirectory),
+  },
+
+  // Depending in the language or framework you are using for
+  // front-end development, add module loaders to the default
+  // webpack configuration. For example, if you are using React
+  // modules and CSS as described in the "Adding a stylesheet"
+  // tutorial, uncomment the following lines:
+  module: {
+    rules: [
+      { test: /\.(ts|tsx|jsx)$/, loader: "ts-loader" },
+      { test: /\.css$/, use: ["style-loader", "css-loader"] },
+      { test: /\.svg$/, use: ["svg-url-loader"] },
+      { test: /\.(jpg|png|webp)$/, use: ["url-loader"] },
+    ]
+   },
+  plugins: [
+    new HtmlWebpackPlugin({
+      template: path.join(__dirname, asset_entry),
+      filename: "index.html",
+      chunks: ["index"],
+      cache: false,
+    }),
+    // Copy assets to dist so they're available for both webpack dev server and dfx deployment
+    // dfx.json now only sources dist/opend_assets/ to avoid duplicates
+    new HtmlWebpackPlugin({
+      template: path.join(__dirname, "src", frontendDirectory, "src", "ii-auth.html"),
+      filename: "ii-auth.html",
+      chunks: ["ii-auth"],
+      cache: false,
+    }),
+    new CopyPlugin({
+      patterns: [
+        {
+          from: path.join(__dirname, "src", frontendDirectory, "src", "ii-redirect.html"),
+          to: path.join(__dirname, "dist", frontendDirectory, "ii-redirect.html"),
+        },
+        {
+          from: path.join(__dirname, "src", frontendDirectory, "assets"),
+          to: path.join(__dirname, "dist", frontendDirectory, "assets"),
+          // Exclude main.css - it needs to be in the root, not in assets folder
+          globOptions: {
+            ignore: ["**/main.css"],
+          },
+        },
+        // Copy main.css to root of dist (where HTML expects it)
+        {
+          from: path.join(__dirname, "src", frontendDirectory, "assets", "main.css"),
+          to: path.join(__dirname, "dist", frontendDirectory, "main.css"),
+          noErrorOnMissing: true, // Don't fail if file doesn't exist
+        },
+      ],
+    }),
+    new webpack.EnvironmentPlugin({
+      NODE_ENV: "development",
+      QUIZ_API_URL: "http://localhost:3000", // Default quiz API URL
+      ...canisterEnvVariables,
+    }),
+    new webpack.ProvidePlugin({
+      Buffer: [require.resolve("buffer/"), "Buffer"],
+      process: require.resolve("process/browser"),
+    }),
+  ],
+  devServer: {
+    historyApiFallback: true,
+    proxy: {
+      "/api": {
+        target: "http://localhost:8000",
+        changeOrigin: true,
+        pathRewrite: {
+          "^/api": "/api",
+        },
+      },
+    },
+    hot: true,
+    watchFiles: [path.resolve(__dirname, "src", frontendDirectory)],
+    liveReload: true,
+  },
+};
